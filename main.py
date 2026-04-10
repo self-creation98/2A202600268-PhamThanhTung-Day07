@@ -7,6 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.agent import KnowledgeBaseAgent
+from src.chunking import RecursiveChunker
 from src.embeddings import (
     EMBEDDING_PROVIDER_ENV,
     LOCAL_EMBEDDING_MODEL,
@@ -56,6 +57,33 @@ def load_documents_from_files(file_paths: list[str]) -> list[Document]:
     return documents
 
 
+def chunk_documents(docs: list[Document], chunk_size: int = 500) -> list[Document]:
+    """Split each document into smaller chunks using RecursiveChunker.
+
+    Each chunk inherits the parent document's metadata plus chunk_index
+    and parent_doc fields for traceability.
+    """
+    chunker = RecursiveChunker(chunk_size=chunk_size)
+    chunked: list[Document] = []
+
+    for doc in docs:
+        chunks = chunker.chunk(doc.content)
+        for idx, chunk_text in enumerate(chunks):
+            chunked.append(
+                Document(
+                    id=f"{doc.id}_chunk{idx}",
+                    content=chunk_text,
+                    metadata={
+                        **doc.metadata,
+                        "chunk_index": idx,
+                        "parent_doc": doc.id,
+                    },
+                )
+            )
+
+    return chunked
+
+
 def demo_llm(prompt: str) -> str:
     """A simple mock LLM for manual RAG testing."""
     preview = prompt[:400].replace("\n", " ")
@@ -100,10 +128,14 @@ def run_manual_demo(question: str | None = None, sample_files: list[str] | None 
 
     print(f"\nEmbedding backend: {getattr(embedder, '_backend_name', embedder.__class__.__name__)}")
 
-    store = EmbeddingStore(collection_name="manual_test_store", embedding_fn=embedder)
-    store.add_documents(docs)
+    # Chunk documents with RecursiveChunker before embedding
+    chunked_docs = chunk_documents(docs, chunk_size=500)
+    print(f"\nChunked {len(docs)} documents → {len(chunked_docs)} chunks (RecursiveChunker, 500 chars)")
 
-    print(f"\nStored {store.get_collection_size()} documents in EmbeddingStore")
+    store = EmbeddingStore(collection_name="manual_test_store", embedding_fn=embedder)
+    store.add_documents(chunked_docs)
+
+    print(f"Stored {store.get_collection_size()} chunks in EmbeddingStore")
     print("\n=== EmbeddingStore Search Test ===")
     print(f"Query: {query}")
     search_results = store.search(query, top_k=3)
